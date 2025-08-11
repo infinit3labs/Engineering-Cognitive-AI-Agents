@@ -17,8 +17,9 @@ from mcp import Tool
 from openai import AsyncOpenAI
 from chromadb import Collection
 
-from .config import INTENT_INSERTION_THRESHOLD
+# Config is now passed as a parameter, not imported as a global
 from .mcp_host import MCPHost
+from .tool_identity import ToolIdentity
 from .intent_database import (
     get_collection_metadata,
     save_collection_metadata,
@@ -48,14 +49,18 @@ class IntentGenerator:
     client: AsyncOpenAI
     host: MCPHost
     template_env: Environment
-    persist_dir: str
+    chroma_path: str
+    collection_name: str
+    intent_insertion_threshold: float
 
     def __init__(
         self,
         openai_client: AsyncOpenAI,
         mcp_host: MCPHost,
         template_env: Environment,
-        persist_dir: str,
+        chroma_path: str,
+        collection_name: str,
+        intent_insertion_threshold: float = 0.92,
     ):
         """Initialize the IntentGenerator.
 
@@ -67,20 +72,31 @@ class IntentGenerator:
             An initialized MCPHost instance.
         template_env : Environment
             Jinja2 environment for loading prompt templates.
-        persist_dir : str
+        chroma_path : str
             Path to the directory for persistent data (e.g., ChromaDB).
+        collection_name : str
+            Name of the ChromaDB collection.
+        intent_insertion_threshold : float, optional
+            Threshold for semantic similarity matching (default 0.92).
         """
         self.client = openai_client
         self.host = mcp_host
         self.template_env = template_env
-        self.persist_dir = persist_dir
+        self.chroma_path = chroma_path
+        self.collection_name = collection_name
+        self.intent_insertion_threshold = intent_insertion_threshold
 
     async def generate_and_store_intents_if_needed(
         self, collection: Collection
-    ) -> None:
+    ) -> bool:
         """
         Check if the MCP configuration has changed and, if so, regenerate and
         store the entire intent hierarchy.
+        
+        Returns
+        -------
+        bool
+            True if regeneration occurred, False if skipped
         """
         if await self.is_regeneration_needed():
             logger.info("MCP config change detected. Regenerating intent hierarchy...")
@@ -90,21 +106,23 @@ class IntentGenerator:
 
             current_hash = self._calculate_config_hash()
             await save_collection_metadata(
-                self.persist_dir, metadata={"config_hash": current_hash}
+                self.chroma_path, self.collection_name, metadata={"config_hash": current_hash}
             )
-            logger.info("Intent hierarchy regenerated and config hash updated.")
+            logger.trace("Intent hierarchy regenerated and config hash updated.")
+            return True
         else:
-            logger.info("MCP config unchanged. Skipping intent regeneration.")
+            logger.trace("MCP config unchanged. Skipping intent regeneration.")
+            return False
 
     async def is_regeneration_needed(self) -> bool:
         """Check if the MCP config has changed since the last run."""
         current_hash = self._calculate_config_hash()
-        persisted_metadata = await get_collection_metadata(self.persist_dir)
+        persisted_metadata = await get_collection_metadata(self.chroma_path, self.collection_name)
         persisted_hash: str | None = persisted_metadata.get("config_hash")
-        logger.debug(f"IntentGenerator calculated current_hash: {current_hash}")
-        logger.debug(f"IntentGenerator found persisted_hash: {persisted_hash}")
+        logger.trace(f"IntentGenerator calculated current_hash: {current_hash}")
+        logger.trace(f"IntentGenerator found persisted_hash: {persisted_hash}")
         regeneration_needed = current_hash != persisted_hash
-        logger.debug(f"Regeneration decision: {regeneration_needed}")
+        logger.trace(f"Regeneration decision: {regeneration_needed}")
         return regeneration_needed
 
     def _calculate_config_hash(self) -> str:
@@ -130,7 +148,7 @@ class IntentGenerator:
 
         # Process each server's tools together
         for server_name, tool_list in all_tools.items():
-            logger.info(f"Processing server: {server_name}")
+            logger.trace(f"Processing server: {server_name}")
 
             # Step 1: Process L1 intents for this server
             server_l1_intents = await self._process_server_l1_intents(collection, server_name, tool_list)
@@ -180,17 +198,17 @@ class IntentGenerator:
             match_id = best_match.get("id")
             match_text = best_match.get("document", "Unknown")
 
-            logger.info(f"Found potential {intent_type} match for intent: '{intent_text}'")
-            logger.info(f"  Match text: '{match_text}'")
-            logger.info(f"  Similarity score: {similarity:.4f} (threshold: {INTENT_INSERTION_THRESHOLD})")
+            logger.trace(f"Found potential {intent_type} match for intent: '{intent_text}'")
+            logger.trace(f"  Match text: '{match_text}'")
+            logger.trace(f"  Similarity score: {similarity:.4f} (threshold: {self.intent_insertion_threshold})")
 
-            if similarity >= INTENT_INSERTION_THRESHOLD:
-                logger.info(f"  ✅ Match accepted: Similarity {similarity:.4f} >= {INTENT_INSERTION_THRESHOLD}")
+            if similarity >= self.intent_insertion_threshold:
+                logger.trace(f"  ✅ Match accepted: Similarity {similarity:.4f} >= {self.intent_insertion_threshold}")
                 return True, match_id
             else:
-                logger.info(f"  ❌ Match rejected: Similarity {similarity:.4f} < {INTENT_INSERTION_THRESHOLD}")
+                logger.trace(f"  ❌ Match rejected: Similarity {similarity:.4f} < {self.intent_insertion_threshold}")
         else:
-            logger.info(f"No potential {intent_type} matches found for intent: '{intent_text}'")
+            logger.trace(f"No potential {intent_type} matches found for intent: '{intent_text}'")
 
         return False, None
 
@@ -216,27 +234,27 @@ class IntentGenerator:
         list[str]
             A list of L1 intent texts generated for this server.
         """
-        logger.debug(f"Generating L1 intents for server: {server_name}")
+        logger.trace(f"Generating L1 intents for server: {server_name}")
         template = self.template_env.get_template("common/generate_l1_intent.md")
         server_l1_intents = []
 
         for tool in tool_list:
             # Generate L1 intent text for this tool
             prompt = await template.render_async(tool=tool)
-            response = await self.client.chat.completions.create(
+            response = await self.client.responses.create(
                 model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
+                input=prompt,
                 temperature=0.0,
             )
-            intent_text = (response.choices[0].message.content or "").strip()
-            tool_uri = f"tool::{server_name}::{tool.name}"
+            intent_text = (response.output_text or "").strip()
+            tool_uri = ToolIdentity.create_tool_uri(server_name, tool.name)
 
             # Check if a semantically similar L1 intent already exists
             match_found, existing_id = await self._find_similar_intent(collection, intent_text, "L1")
 
             if match_found and existing_id:
                 # UPDATE: Add this tool to the existing L1 intent
-                logger.debug(f"Updating existing L1 intent with new tool: {tool.name}")
+                logger.trace(f"Updating existing L1 intent with new tool: {tool.name}")
                 existing_doc = collection.get(ids=[existing_id], include=["metadatas", "documents"])
 
                 if not existing_doc:
@@ -276,7 +294,7 @@ class IntentGenerator:
                 server_l1_intents.append(existing_document)
             else:
                 # INSERT: Create a new L1 intent document
-                logger.debug(f"Creating new L1 intent for tool: {tool.name}")
+                logger.trace(f"Creating new L1 intent for tool: {tool.name}")
                 doc_id = f"intent::L1::{server_name}::{tool.name}"
 
                 # Create tool entry with URI and schema
@@ -295,7 +313,7 @@ class IntentGenerator:
                 )
                 server_l1_intents.append(intent_text)
 
-        logger.info(f"Generated {len(server_l1_intents)} L1 intents for server: {server_name}")
+        logger.trace(f"Generated {len(server_l1_intents)} L1 intents for server: {server_name}")
         return server_l1_intents
 
     def _parse_tools_metadata(self, metadata: dict[str, Any]) -> list[dict[str, Any]]:
@@ -322,13 +340,13 @@ class IntentGenerator:
                 logger.warning(f"Tools metadata is not a string: {type(existing_tools_str)}")
                 existing_tools = []
         except json.JSONDecodeError:
-            logger.error(f"Failed to parse tools JSON from metadata")
+            logger.error("Failed to parse tools JSON from metadata")
             existing_tools = []
 
         # Handle backward compatibility
         if existing_tools and isinstance(existing_tools[0], str):
             # Old format: list of URI strings with separate schema field
-            logger.info("Migrating tools metadata from old format to new format")
+            logger.trace("Migrating tools metadata from old format to new format")
             legacy_schema = metadata.get("schema")
 
             if legacy_schema:
@@ -377,17 +395,17 @@ class IntentGenerator:
             logger.warning(f"No L1 intents to categorize for server: {server_name}")
             return
 
-        logger.debug(f"Generating L2 categories for server: {server_name}")
+        logger.trace(f"Generating L2 categories for server: {server_name}")
         template = self.template_env.get_template("common/generate_l2_intent.md")
 
         # Generate L2 categories using the LLM
         prompt = await template.render_async(l1_intents=l1_intent_texts)
-        response = await self.client.chat.completions.create(
+        response = await self.client.responses.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
+            input=prompt,
             temperature=0.0,
         )
-        llm_output = (response.choices[0].message.content or "").strip()
+        llm_output = (response.output_text or "").strip()
 
         # Parse the LLM output to extract L2 groups
         l2_groups = self._parse_l2_groups(llm_output)
@@ -399,7 +417,7 @@ class IntentGenerator:
 
             if match_found and existing_id:
                 # UPDATE: Merge this group's L1 intents with the existing L2 intent
-                logger.debug(f"Updating existing L2 intent: {l2_intent_text}")
+                logger.trace(f"Updating existing L2 intent: {l2_intent_text}")
                 existing_doc = collection.get(ids=[existing_id], include=["metadatas"])
 
                 if not existing_doc:
@@ -434,7 +452,7 @@ class IntentGenerator:
                 )
             else:
                 # INSERT: Create a new L2 intent document
-                logger.debug(f"Creating new L2 intent: {l2_intent_text}")
+                logger.trace(f"Creating new L2 intent: {l2_intent_text}")
                 doc_id = f"intent::L2::{server_name}::{group_idx}"
                 index_item(
                     collection,
@@ -448,7 +466,7 @@ class IntentGenerator:
                     }
                 )
 
-        logger.info(f"Generated {len(l2_groups)} L2 categories for server: {server_name}")
+        logger.trace(f"Generated {len(l2_groups)} L2 categories for server: {server_name}")
 
     def _parse_l2_groups(self, llm_output: str) -> list[tuple[str, list[str]]]:
         """Parse the LLM output to extract L2 groups.
@@ -503,35 +521,35 @@ class IntentGenerator:
         self, all_tools: dict[str, list[Tool]]
     ) -> list[dict[str, Any]]:
         """Generate Level 1 intents, one for each tool."""
-        logger.debug("Generating Level 1 (Tool) intents...")
+        logger.trace("Generating Level 1 (Tool) intents...")
         template = self.template_env.get_template("common/generate_l1_intent.md")
         intents = []
         for server_name, tool_list in all_tools.items():
             for tool in tool_list:
                 prompt = await template.render_async(tool=tool)
-                response = await self.client.chat.completions.create(
+                response = await self.client.responses.create(
                     model="gpt-4o",
-                    messages=[{"role": "user", "content": prompt}],
+                    input=prompt,
                     temperature=0.0,
                 )
-                intent_text = (response.choices[0].message.content or "").strip()
-                tool_uri = f"tool::{server_name}::{tool.name}"
-                logger.debug(
+                intent_text = (response.output_text or "").strip()
+                tool_uri = ToolIdentity.create_tool_uri(server_name, tool.name)
+                logger.trace(
                     f"Generated L1 intent for {server_name}::{tool.name}: {intent_text}"
                 )
                 intents.append({
-                    "id": f"intent::L1::{server_name}::{tool.name}",
+                    "id": ToolIdentity.create_intent_id("L1", server_name, tool.name),
                     "intent": intent_text,
                     "tool_uri": tool_uri,
                 })
-        logger.info(f"Generated {len(intents)} L1 intents.")
+        logger.trace(f"Generated {len(intents)} L1 intents.")
         return intents
 
     async def _generate_l2_server_intents_async(
         self, l1_intents: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """Generate Level 2 intents, one for each server."""
-        logger.debug("Generating Level 2 (Server) intents...")
+        logger.trace("Generating Level 2 (Server) intents...")
         template = self.template_env.get_template("common/generate_l2_intent.md")
         server_to_l1: dict[str, list[dict[str, Any]]] = {}
         for intent in l1_intents:
@@ -544,16 +562,16 @@ class IntentGenerator:
             prompt = await template.render_async(
                 server_name=server_name, child_intents=child_intent_texts
             )
-            response = await self.client.chat.completions.create(
+            response = await self.client.responses.create(
                 model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
+                input=prompt,
                 temperature=0.0,
             )
-            intent_text = (response.choices[0].message.content or "").strip()
+            intent_text = (response.output_text or "").strip()
             intents.append({
                 "id": f"intent::L2::{server_name}",
                 "intent": intent_text,
                 "l1_intent_texts": child_intent_texts,
             })
-        logger.info(f"Generated {len(intents)} L2 intents.")
+        logger.trace(f"Generated {len(intents)} L2 intents.")
         return intents

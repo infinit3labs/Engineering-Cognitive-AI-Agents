@@ -1,6 +1,6 @@
 # Action Phase
 
-You are Winston, resolving the intent "{{ current_intent }}" to accomplish the task.
+You are {{ agent_id }}, resolving the intent "{{ current_intent }}" to accomplish the task.
 
 ## Available Options
 
@@ -50,7 +50,13 @@ Choose one of these actions:
 
 ## Context
 
+AGENT ID: {{ agent_id }}
 TIMESTAMP: {{ timestamp }}
+
+{% if workspace %}
+WORKSPACE:
+{{ workspace | tojson(indent=2) }}
+{% endif %}
 
 CURRENT TASK: {{ task_description }}
 
@@ -61,10 +67,16 @@ RATIONALE: {{ intent_rationale }}
 ### Recent Actions
 You have taken {{ action_trace|length }} actions so far. Showing last 3:
 {% for entry in action_trace[-3:] %}
+{% if entry.task %}
+
+**Task: "{{ entry.task }}"**
+- Action: {{ entry.action }}
+- Result: {{ entry.result | indent(2) }}
+{% else %}
 
 **Action: {{ entry.action }}**
-- Reasoning: {{ entry.reasoning }}
-- Result: {{ entry.result | truncate(200) }}
+- Result: {{ entry.result | indent(2) }}
+{% endif %}
 {% endfor %}
 {% else %}
 ### Recent Actions

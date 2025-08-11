@@ -32,7 +32,7 @@ def register_tool(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     tool_name = func.__name__
     _TOOL_REGISTRY[tool_name] = func
-    logger.debug(f"Registered tool: '{tool_name}'")
+    logger.trace(f"Registered tool: '{tool_name}'")
     return func
 
 
@@ -61,6 +61,6 @@ def execute_tool_function(tool_name: str, arguments: dict[str, Any]) -> Any:
         logger.error(f"Tool '{tool_name}' not found in registry.")
         raise KeyError(f"Tool '{tool_name}' is not a registered function.")
 
-    logger.info(f"Executing local tool: '{tool_name}'")
+    logger.trace(f"Executing local tool: '{tool_name}'")
     tool_function = _TOOL_REGISTRY[tool_name]
     return tool_function(**arguments)

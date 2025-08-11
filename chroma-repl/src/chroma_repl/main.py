@@ -16,13 +16,12 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
-from common.config import INTENT_COLLECTION_NAME, INTENT_DB_PERSIST_DIR
+from common.config import Config
 from common.intent_database import (
     get_full_item_by_id,
     initialize_intent_database,
     query_by_intent,
 )
-from common.paths import get_chapter_path
 
 
 class ChromaREPLError(Exception):
@@ -55,16 +54,28 @@ class ChromaREPL:
         Name of the active collection.
     """
 
-    def __init__(self) -> None:
-        """Initialize the ChromaDB REPL interface."""
+    def __init__(self, config: Config, mode: str = "intents") -> None:
+        """Initialize the ChromaDB REPL interface.
+        
+        Parameters
+        ----------
+        config : Config
+            Configuration object to use
+        mode : str
+            Operating mode: "intents" or "episodes"
+        """
         self.console = Console()
         self.collection: Collection | None = None
         self.db_path: str | None = None
-        self.collection_name: str = INTENT_COLLECTION_NAME
+        self.config = config
+        self.mode = mode
+        self.collection_name: str = (
+            "episodes" if mode == "episodes" else config["INTENT_COLLECTION_NAME"]
+        )
 
     @logger.catch
     def connect_database(
-        self, db_path: str, collection_name: str = INTENT_COLLECTION_NAME
+        self, db_path: str, collection_name: str | None = None
     ) -> None:
         """Connect to a ChromaDB database and collection.
 
@@ -73,7 +84,7 @@ class ChromaREPL:
         db_path : str
             Path to the ChromaDB persistence directory.
         collection_name : str, optional
-            Name of the collection to connect to.
+            Name of the collection to connect to. If not provided, uses config default.
 
         Raises
         ------
@@ -88,13 +99,13 @@ class ChromaREPL:
 
         try:
             self.collection = initialize_intent_database(
-                persist_dir=str(db_path_obj), collection_name=collection_name
+                chroma_path=str(db_path_obj), collection_name=collection_name
             )
             self.db_path = str(db_path_obj)
-            self.collection_name = collection_name
+            self.collection_name = collection_name or self.config["INTENT_COLLECTION_NAME"]
 
             self.console.print(f"[green]✓[/green] Connected to database: {db_path}")
-            self.console.print(f"[green]✓[/green] Active collection: {collection_name}")
+            self.console.print(f"[green]✓[/green] Active collection: {self.collection_name}")
 
         except Exception as e:
             logger.error(f"Failed to connect to database: {e}")
@@ -327,10 +338,142 @@ class ChromaREPL:
             logger.error(f"Failed to retrieve document: {e}")
             self.console.print(f"[red]Error retrieving document: {e}[/red]")
 
+    @logger.catch
+    def list_episodes(self, has_surprises: bool = False) -> None:
+        """List all episodes in the collection.
+        
+        Parameters
+        ----------
+        has_surprises : bool
+            Filter to only show episodes with lessons/surprises
+        """
+        if not self.collection:
+            self.console.print("[red]No database connected[/red]")
+            return
+            
+        try:
+            # Get all episodes with metadata
+            where_clause = {"has_lessons": True} if has_surprises else None
+            results = self.collection.get(
+                where=where_clause,
+                include=["metadatas", "documents"]
+            )
+            
+            if not results.get("ids"):
+                self.console.print("[yellow]No episodes found[/yellow]")
+                return
+                
+            # Create table
+            table = Table(title="Episodes")
+            table.add_column("Episode ID", style="cyan", no_wrap=True)
+            table.add_column("Task", style="white")
+            table.add_column("Outcome", style="green")
+            table.add_column("Actions", justify="right", style="yellow")
+            table.add_column("Lessons", justify="right", style="magenta")
+            
+            for i, episode_id in enumerate(results["ids"]):
+                metadata = results["metadatas"][i] if results.get("metadatas") else {}
+                task = metadata.get("task", "Unknown")[:50]
+                outcome = metadata.get("outcome", "unknown")
+                action_count = metadata.get("action_count", 0)
+                has_lessons = "Yes" if metadata.get("has_lessons") else "No"
+                
+                table.add_row(episode_id, task, outcome, str(action_count), has_lessons)
+                
+            self.console.print(table)
+            
+        except Exception as e:
+            logger.error(f"Failed to list episodes: {e}")
+            self.console.print(f"[red]Error listing episodes: {e}[/red]")
+
+    @logger.catch
+    def show_episode(self, episode_id: str, show_trace: bool = False) -> None:
+        """Display detailed information about a specific episode.
+        
+        Parameters
+        ----------
+        episode_id : str
+            The episode ID to display
+        show_trace : bool
+            Whether to show the full action trace
+        """
+        if not self.collection:
+            self.console.print("[red]No database connected[/red]")
+            return
+            
+        try:
+            # Load the episode JSON file
+            episodes_path = self.db_path.replace("chroma_db", "episodes")
+            episode_file = Path(episodes_path) / f"{episode_id}.json"
+            
+            if not episode_file.exists():
+                self.console.print(f"[yellow]Episode file not found: {episode_file}[/yellow]")
+                return
+                
+            with open(episode_file, "r") as f:
+                episode_data = json.load(f)
+                
+            # Display episode information
+            self.console.print(f"\n[bold cyan]Episode: {episode_id}[/bold cyan]")
+            self.console.print(f"Task: {episode_data['task_description']}")
+            self.console.print(f"Outcome: {episode_data['outcome']}")
+            self.console.print(f"Result: {episode_data['result']}")
+            self.console.print(f"Timestamp: {episode_data['timestamp']}")
+            self.console.print(f"Actions: {len(episode_data.get('full_trace', []))}")
+            
+            # Show summary if available
+            if episode_data.get("summary_checkpoint"):
+                checkpoint = episode_data["summary_checkpoint"]
+                self.console.print(f"\n[bold]Summary:[/bold]")
+                self.console.print(checkpoint["summary"])
+                
+                if checkpoint.get("lessons"):
+                    self.console.print(f"\n[bold]Lessons Learned:[/bold]")
+                    for lesson in checkpoint["lessons"]:
+                        self.console.print(f"  • {lesson}")
+                        
+            # Show action trace if requested
+            if show_trace and episode_data.get("full_trace"):
+                self.console.print(f"\n[bold]Action Trace:[/bold]")
+                for i, action in enumerate(episode_data["full_trace"], 1):
+                    self.console.print(f"\n{i}. {action['action']}")
+                    self.console.print(f"   Reasoning: {action['reasoning']}")
+                    result = action['result']
+                    if len(result) > 200:
+                        result = result[:200] + "..."
+                    self.console.print(f"   Result: {result}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to show episode: {e}")
+            self.console.print(f"[red]Error showing episode: {e}[/red]")
+
     def show_help(self) -> None:
         """Display available commands and their usage."""
-        help_text = """
-[bold cyan]Available Commands:[/bold cyan]
+        if self.mode == "episodes":
+            help_text = """
+[bold cyan]Available Commands - Episode Mode:[/bold cyan]
+
+[yellow]Database Operations:[/yellow]
+  info                    - Show database and collection information
+  collections            - List all collections in the database
+
+[yellow]Episode Operations:[/yellow]
+  list [--has-surprises] - List all episodes (optionally filtered by lessons)
+  show <episode_id> [-t] - Display episode details (use -t for full trace)
+  query <intent> [n]     - Search episodes by semantic similarity
+
+[yellow]Utility Commands:[/yellow]
+  help                   - Show this help message
+  exit                   - Exit the REPL
+
+[yellow]Examples:[/yellow]
+  list --has-surprises
+  show 12345-abcd-6789 -t
+  query "testing setup" 5
+"""
+        else:
+            help_text = """
+[bold cyan]Available Commands - Intent Mode:[/bold cyan]
 
 [yellow]Database Operations:[/yellow]
   info                    - Show database and collection information
@@ -357,7 +500,8 @@ class ChromaREPL:
 
     def run_repl(self) -> None:
         """Run the interactive REPL loop."""
-        self.console.print("\n[bold green]Winston ChromaDB REPL[/bold green]")
+        mode_text = "Episode Mode" if self.mode == "episodes" else "Intent Mode"
+        self.console.print(f"\n[bold green]Winston ChromaDB REPL - {mode_text}[/bold green]")
         self.console.print("Type 'help' for available commands or 'exit' to quit.\n")
 
         while True:
@@ -410,15 +554,29 @@ class ChromaREPL:
 
                     self.query_intent(intent, n_results)
 
+                elif command == "list" and self.mode == "episodes":
+                    has_surprises = "--has-surprises" in args
+                    self.list_episodes(has_surprises)
+
                 elif command == "show":
                     if not args:
-                        self.console.print(
-                            "[red]Usage: show <doc_id>[/red]"
-                        )
+                        if self.mode == "episodes":
+                            self.console.print(
+                                "[red]Usage: show <episode_id> [-t][/red]"
+                            )
+                        else:
+                            self.console.print(
+                                "[red]Usage: show <doc_id>[/red]"
+                            )
                         continue
 
-                    doc_id = args[0]
-                    self.show_document(doc_id)
+                    if self.mode == "episodes":
+                        episode_id = args[0]
+                        show_trace = "-t" in args
+                        self.show_episode(episode_id, show_trace)
+                    else:
+                        doc_id = args[0]
+                        self.show_document(doc_id)
 
                 elif command == "export":
                     if not args:
@@ -447,7 +605,7 @@ class ChromaREPL:
 
 @logger.catch
 def resolve_database_path(
-    db_path: str | None, collection_name: str | None, chapter_context: str | None
+    db_path: str | None, collection_name: str | None, chapter_context: str | None, config: Config
 ) -> tuple[str, str]:
     """Resolve database path and collection name from various inputs.
 
@@ -470,7 +628,7 @@ def resolve_database_path(
     DatabaseNotFoundError
         If no valid database path can be resolved.
     """
-    resolved_collection = collection_name or INTENT_COLLECTION_NAME
+    resolved_collection = collection_name or config["INTENT_COLLECTION_NAME"]
 
     # Direct path specified
     if db_path:
@@ -482,7 +640,8 @@ def resolve_database_path(
     # Chapter context specified
     if chapter_context:
         try:
-            chapter_db_path = get_chapter_path(chapter_context, "chroma_db")
+            chapter_config = Config(chapter_context)
+            chapter_db_path = chapter_config.get_chapter_path("chroma_db")
             if chapter_db_path.exists():
                 return str(chapter_db_path), resolved_collection
             else:
@@ -495,13 +654,13 @@ def resolve_database_path(
             ) from e
 
     # Default path
-    default_path = Path(INTENT_DB_PERSIST_DIR)
+    default_path = Path(config["CHROMA_PATH"])
     if default_path.exists():
         return str(default_path), resolved_collection
 
     raise DatabaseNotFoundError(
         "No database found. Specify --db-path, --chapter-context, or ensure "
-        f"default database exists at: {INTENT_DB_PERSIST_DIR}"
+        f"default database exists at: {config['CHROMA_PATH']}"
     )
 
 
@@ -515,25 +674,33 @@ def resolve_database_path(
 @click.option(
     "--collection-name",
     "-c",
-    default=INTENT_COLLECTION_NAME,
-    help=f"Collection name to use (default: {INTENT_COLLECTION_NAME})",
+    default=None,
+    help="Collection name to use (defaults to config setting)",
 )
 @click.option(
     "--chapter-context",
     "-ch",
     help="Chapter context for automatic database path resolution (e.g., 'chapter03')",
 )
+@click.option(
+    "--mode",
+    "-m",
+    type=click.Choice(["intents", "episodes"], case_sensitive=False),
+    default="intents",
+    help="Operating mode: intents (default) or episodes",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 def main(
     db_path: Path | None,
-    collection_name: str,
+    collection_name: str | None,
     chapter_context: str | None,
+    mode: str,
     verbose: bool,
 ) -> None:
-    """Interactive REPL for Winston's ChromaDB intent databases.
+    """Interactive REPL for Winston's ChromaDB databases.
 
     This tool provides a command-line interface for querying and inspecting
-    ChromaDB databases used by Winston's intent discovery system.
+    ChromaDB databases used by Winston's intent discovery and episodic memory systems.
 
     Examples:
 
@@ -543,6 +710,9 @@ def main(
         # Use chapter context
         chroma-repl --chapter-context chapter03
 
+        # Explore episode memory from Chapter 4
+        chroma-repl --chapter-context chapter04 --mode episodes
+
         # Specify collection name
         chroma-repl --collection-name custom_intents
     """
@@ -551,15 +721,28 @@ def main(
         logger.info("Verbose logging enabled")
 
     try:
+        # Create config instance - use chapter context if provided, otherwise generic
+        if chapter_context:
+            config = Config(chapter_context)
+        else:
+            # Use a generic config for the REPL when no chapter is specified
+            config = Config("chroma-repl")
+        
         # Resolve database path and collection
         resolved_db_path, resolved_collection = resolve_database_path(
             db_path=str(db_path) if db_path else None,
             collection_name=collection_name,
             chapter_context=chapter_context,
+            config=config,
         )
 
         # Initialize and run REPL
-        repl = ChromaREPL()
+        repl = ChromaREPL(config, mode=mode)
+        
+        # Override collection name for episodes mode
+        if mode == "episodes":
+            resolved_collection = "episodes"
+            
         repl.connect_database(resolved_db_path, resolved_collection)
         repl.run_repl()
 

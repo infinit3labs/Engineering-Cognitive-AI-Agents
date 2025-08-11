@@ -8,21 +8,14 @@ hierarchical intents and their associated tools using a ChromaDB vector store.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, cast
 
-import chromadb
 from chromadb import Collection
 from chromadb.api.types import Embeddable, EmbeddingFunction
 from chromadb.utils import embedding_functions
 from loguru import logger
 
-from common.config import INTENT_COLLECTION_NAME, INTENT_DB_PERSIST_DIR
-
-# Load environment configuration
-
-# ChromaDB configuration
-DEFAULT_INTENT_MATCH_THRESHOLD = float(os.getenv("INTENT_MATCH_THRESHOLD", "0.5"))
+from common.chroma_client import get_chroma_client
 
 # Global ChromaDB client and collections cache
 _chroma_clients: dict[str, Any] = {}
@@ -31,16 +24,16 @@ _collections: dict[str, Collection] = {}
 
 @logger.catch
 def initialize_intent_database(
-    persist_dir: str = INTENT_DB_PERSIST_DIR,
-    collection_name: str = INTENT_COLLECTION_NAME,
+    chroma_path: str | None = None,
+    collection_name: str | None = None,
 ) -> Collection:
     """Initialize ChromaDB client and the main collection.
 
     Parameters
     ----------
-    persist_dir : str
+    chroma_path : str
         Directory path for ChromaDB persistence.
-    collection_name : str, optional
+    collection_name : str
         Name of the ChromaDB collection.
 
     Returns
@@ -48,12 +41,18 @@ def initialize_intent_database(
     Collection
         ChromaDB collection for storing intents and tools.
     """
-    collection_key = f"{persist_dir}:{collection_name}"
+    # Validate required parameters
+    if chroma_path is None:
+        raise ValueError("chroma_path is required")
+    if collection_name is None:
+        raise ValueError("collection_name is required")
+    
+    collection_key = f"{chroma_path}:{collection_name}"
     if collection_key in _collections:
         return _collections[collection_key]
 
-    client = chromadb.PersistentClient(path=persist_dir)
-    _chroma_clients[persist_dir] = client
+    client = get_chroma_client(chroma_path)
+    _chroma_clients[chroma_path] = client
 
     embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="all-MiniLM-L6-v2"
@@ -66,7 +65,7 @@ def initialize_intent_database(
 
     _collections[collection_key] = collection
     logger.info(
-        f"Initialized ChromaDB collection: '{collection.name}' at {persist_dir}"
+        f"Initialized ChromaDB collection: '{collection.name}' at {chroma_path}"
     )
     return collection
 
@@ -87,7 +86,7 @@ def index_item(collection: Collection, item: dict[str, Any]) -> None:
         documents=[item["text"]],
         metadatas=[item["metadata"]],
     )
-    logger.info(f"Indexed {item['metadata'].get('type', 'item')} '{item['id']}': \"{item['text']}\"")
+    logger.trace(f"Indexed {item['metadata'].get('type', 'item')} '{item['id']}': \"{item['text']}\"")
 
 @logger.catch
 def index_tool(
@@ -225,8 +224,8 @@ def query_by_intent(
     list[dict[str, Any]] | None
         List of matching items (intents or tools), or None if no matches are found.
     """
-    logger.debug(f"[INTENT_DB] Querying collection '{collection.name}' for intent: '{intent}'")
-    logger.debug(f"[INTENT_DB] Query parameters: n_results={n_results}, where_clause={where_clause}")
+    logger.trace(f"[INTENT_DB] Querying collection '{collection.name}' for intent: '{intent}'")
+    logger.trace(f"[INTENT_DB] Query parameters: n_results={n_results}, where_clause={where_clause}")
 
     results = collection.query(
         query_texts=[intent],
@@ -240,13 +239,13 @@ def query_by_intent(
     meta_list = results.get("metadatas")
     id_list = results.get("ids")
 
-    logger.debug(f"[INTENT_DB] Raw ChromaDB results: ids={len(id_list[0]) if id_list and id_list[0] else 0}, "
+    logger.trace(f"[INTENT_DB] Raw ChromaDB results: ids={len(id_list[0]) if id_list and id_list[0] else 0}, "
                 f"docs={len(doc_list[0]) if doc_list and doc_list[0] else 0}, "
                 f"distances={len(dist_list[0]) if dist_list and dist_list[0] else 0}, "
                 f"metadatas={len(meta_list[0]) if meta_list and meta_list[0] else 0}")
 
     if not doc_list or not dist_list or not meta_list or not id_list or not doc_list[0]:
-        logger.info(f"[INTENT_DB] No results found for intent: '{intent}' with filter: {where_clause}")
+        logger.trace(f"[INTENT_DB] No results found for intent: '{intent}' with filter: {where_clause}")
         return None
 
     matching_items = []
@@ -264,8 +263,8 @@ def query_by_intent(
         # Log detailed information about each match
         item_type = item.get("type", "unknown")
         item_id = item.get("tool_name", item.get("id", "unknown"))
-        logger.debug(f"[INTENT_DB] Match {i+1}: type={item_type}, id={item_id}, similarity={similarity:.3f}")
-        logger.debug(f"[INTENT_DB] Document text: {doc[:100]}{'...' if len(doc) > 100 else ''}")
+        logger.trace(f"[INTENT_DB] Match {i+1}: type={item_type}, id={item_id}, similarity={similarity:.3f}")
+        logger.trace(f"[INTENT_DB] Document text: {doc[:100]}{'...' if len(doc) > 100 else ''}")
 
     # Build similarity summary without nested f-strings to avoid syntax issues
     similarity_summary = []
@@ -274,7 +273,7 @@ def query_by_intent(
         similarity = item["similarity"]
         similarity_summary.append(f"{item_name}({similarity:.3f})")
 
-    logger.info(f"[INTENT_DB] Found {len(matching_items)} items for intent '{intent}' with similarities: {similarity_summary}")
+    logger.trace(f"[INTENT_DB] Found {len(matching_items)} items for intent '{intent}'")
 
     return matching_items
 
@@ -364,64 +363,71 @@ def clear_collection(collection: Collection) -> None:
         ids_to_delete = collection.get(limit=count)["ids"]
         if ids_to_delete:
             collection.delete(ids=ids_to_delete)
-            logger.info(f"Cleared {len(ids_to_delete)} items from '{collection.name}'")
+            logger.trace(f"Cleared {len(ids_to_delete)} items from '{collection.name}'")
     else:
-        logger.info(f"Collection '{collection.name}' is already empty.")
+        logger.trace(f"Collection '{collection.name}' is already empty.")
 
 
 @logger.catch
 async def save_collection_metadata(
-    persist_dir: str = INTENT_DB_PERSIST_DIR,
-    collection_name: str = INTENT_COLLECTION_NAME,
+    chroma_path: str | None = None,
+    collection_name: str | None = None,
     metadata: dict[str, Any] = {},
 ) -> None:
-    """Store or update additional metadata at the collection level.
+    """Store or update additional metadata in a separate file.
 
-    This uses a special document with ID 'collection_metadata' to store
-    a JSON blob of key-value pairs. It merges the provided metadata
-    with any existing metadata.
+    This stores metadata in a JSON file outside of ChromaDB to avoid
+    polluting the intent search space.
 
     Parameters
     ----------
-    persist_dir : str
+    chroma_path : str
         Directory path for ChromaDB persistence.
     collection_name : str
         Name of the ChromaDB collection.
     metadata : dict[str, Any]
         The metadata to save. It will be merged with existing metadata.
     """
-    collection = initialize_intent_database(persist_dir, collection_name)
-    existing_item = collection.get(ids=["collection_metadata"], include=["documents"])
-
+    # Validate required parameters
+    if chroma_path is None:
+        raise ValueError("chroma_path is required")
+    if collection_name is None:
+        raise ValueError("collection_name is required")
+    
+    # Store metadata in a separate JSON file
+    from pathlib import Path
+    metadata_file = Path(chroma_path) / f"{collection_name}_metadata.json"
+    
     existing_metadata = {}
-    documents = existing_item.get("documents")
-    if documents and documents[0]:
+    if metadata_file.exists():
         try:
-            existing_metadata = json.loads(documents[0])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Could not parse existing metadata; will overwrite.")
-
+            with metadata_file.open('r') as f:
+                existing_metadata = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not read existing metadata: {e}; will overwrite.")
+    
     updated_metadata = {**existing_metadata, **metadata}
-    serialized_metadata = json.dumps(updated_metadata)
-
-    collection.upsert(
-        ids=["collection_metadata"],
-        documents=[serialized_metadata],
-        metadatas=[{"type": "metadata"}],
-    )
-    logger.info(f"Upserted collection metadata for '{collection.name}'.")
+    
+    # Ensure directory exists
+    metadata_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Write updated metadata
+    with metadata_file.open('w') as f:
+        json.dump(updated_metadata, f, indent=2)
+    
+    logger.trace(f"Saved collection metadata for '{collection_name}' to {metadata_file}")
 
 
 @logger.catch
 async def get_collection_metadata(
-    persist_dir: str = INTENT_DB_PERSIST_DIR,
-    collection_name: str = INTENT_COLLECTION_NAME,
+    chroma_path: str | None = None,
+    collection_name: str | None = None,
 ) -> dict[str, Any]:
-    """Retrieve additional metadata stored at the collection level.
+    """Retrieve additional metadata from the metadata file.
 
     Parameters
     ----------
-    persist_dir : str
+    chroma_path : str
         Directory path for ChromaDB persistence.
     collection_name : str
         Name of the ChromaDB collection.
@@ -429,29 +435,35 @@ async def get_collection_metadata(
     Returns
     -------
     dict[str, Any]
-        The metadata from the collection.
+        The metadata from the file.
     """
-    collection = initialize_intent_database(persist_dir, collection_name)
-    result = collection.get(ids=["collection_metadata"], include=["documents"])
-
-    documents = result.get("documents")
-    if documents and documents[0]:
+    # Validate required parameters
+    if chroma_path is None:
+        raise ValueError("chroma_path is required")
+    if collection_name is None:
+        raise ValueError("collection_name is required")
+    
+    from pathlib import Path
+    metadata_file = Path(chroma_path) / f"{collection_name}_metadata.json"
+    
+    if metadata_file.exists():
         try:
-            return json.loads(documents[0])
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.error(f"Error decoding collection metadata: {e}")
+            with metadata_file.open('r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Error reading collection metadata: {e}")
             return {}
-
-    logger.debug("No collection metadata found.")
+    
+    logger.trace("No collection metadata file found.")
     return {}
 
 
-def _get_collection(persist_dir: str, collection_name: str) -> Collection:
+def _get_collection(chroma_path: str, collection_name: str) -> Collection:
     """Internal helper to retrieve an initialized collection."""
-    key = f"{persist_dir}:{collection_name}"
+    key = f"{chroma_path}:{collection_name}"
     if key not in _collections:
         raise RuntimeError(
-            f"Collection '{collection_name}' not initialized in '{persist_dir}'"
+            f"Collection '{collection_name}' not initialized in '{chroma_path}'"
         )
     return _collections[key]
 
@@ -539,4 +551,4 @@ def update_document(collection: Collection, doc_id: str, new_metadata: dict[str,
         metadatas=[existing_metadata]
     )
 
-    logger.info(f"Updated document '{doc_id}' with merged metadata.")
+    logger.trace(f"Updated document '{doc_id}' with merged metadata.")

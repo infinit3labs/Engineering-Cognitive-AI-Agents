@@ -21,6 +21,7 @@ _ = load_dotenv(override=True)
 
 class ConfigurationError(Exception):
     """Raised when configuration validation fails."""
+
     pass
 
 
@@ -68,20 +69,36 @@ class Config:
     def _load_environment_config(self) -> None:
         """Load configuration from environment variables."""
         self._config.update({
-            "INTENT_DB_PERSIST_DIR": os.getenv("INTENT_DB_PERSIST_DIR", "chromadb_data"),
-            "INTENT_COLLECTION_NAME": os.getenv("INTENT_COLLECTION_NAME", "winston_intents"),
+            # NOTE: CHROMA_PATH is set in _load_chapter_paths() - no default here!
+            "INTENT_COLLECTION_NAME": os.getenv(
+                "INTENT_COLLECTION_NAME", "winston_intents"
+            ),
             "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
             "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "gpt-4o"),
             "DEFAULT_MAX_PROCESSES": int(os.getenv("DEFAULT_MAX_PROCESSES", "5")),
             "INTENT_MATCH_THRESHOLD": float(os.getenv("INTENT_MATCH_THRESHOLD", "0.7")),
-            "INTENT_INSERTION_THRESHOLD": float(os.getenv("INTENT_INSERTION_THRESHOLD", "0.92")),
+            "INTENT_INSERTION_THRESHOLD": float(
+                os.getenv("INTENT_INSERTION_THRESHOLD", "0.92")
+            ),
         })
 
     def _load_chapter_paths(self) -> None:
-        """Generate and load chapter-specific paths."""
+        """Generate and load chapter-specific paths.
+        
+        All paths are stored as ABSOLUTE path strings to ensure
+        consistency across process boundaries (e.g., MCP servers).
+        """
+        # self.tmp_root is already absolute from __init__
         chapter_root = self.tmp_root / self.chapter
+        
+        # Verify it's absolute (should always be true)
+        if not chapter_root.is_absolute():
+            raise ValueError(
+                f"Chapter root must be absolute, got: {chapter_root}. "
+                f"This is a bug - tmp_root should have been resolved in __init__."
+            )
 
-        # Generate all standard facility paths
+        # Generate all standard facility paths as ABSOLUTE path strings
         self._config.update({
             "CHAPTER_ROOT": str(chapter_root),
             "LOG_PATH": str(chapter_root / "logs"),
@@ -258,7 +275,7 @@ def substitute_config_variables(data: Any, config: Config) -> Any:
         return [substitute_config_variables(item, config) for item in data]
     elif isinstance(data, str):
         # Find all ${KEY} patterns and replace them
-        pattern = r'\$\{([^}]+)\}'
+        pattern = r"\$\{([^}]+)\}"
 
         def replace_var(match):
             key = match.group(1)
@@ -294,98 +311,3 @@ def setup_logging(log_file: Path | str | None = None) -> None:
             format="{time} | {level: <8} | {name}:{function}:{line} - {message}",
             colorize=False,
         )
-
-
-# Global configuration instance - initialized by calling initialize_config()
-config: Config | None = None
-
-
-def initialize_config(chapter: str, tmp_root: str = "./tmp") -> Config:
-    """Initialize the global configuration instance.
-
-    This function must be called once at application startup before accessing
-    the global config object.
-
-    Parameters
-    ----------
-    chapter : str
-        Chapter identifier for path generation
-    tmp_root : str, optional
-        Root directory for transient state
-
-    Returns
-    -------
-    Config
-        The initialized configuration instance
-
-    Examples
-    --------
-    >>> from common.config import initialize_config, config
-    >>> initialize_config("chapter03")
-    >>> api_key = config["OPENAI_API_KEY"]
-    """
-    global config
-    config = Config(chapter, tmp_root)
-    config.validate()
-    logger.info(f"Configuration initialized for {chapter}")
-    return config
-
-
-def get_config() -> dict[str, Any]:
-    """Get configuration as dictionary for backward compatibility.
-
-    Returns
-    -------
-    dict[str, Any]
-        Configuration dictionary
-
-    Raises
-    ------
-    RuntimeError
-        If configuration has not been initialized
-    """
-    if config is None:
-        raise RuntimeError("Configuration not initialized. Call initialize_config() first.")
-
-    return {
-        "INTENT_DB_PERSIST_DIR": config["INTENT_DB_PERSIST_DIR"],
-        "INTENT_COLLECTION_NAME": config["INTENT_COLLECTION_NAME"],
-        "OPENAI_API_KEY": config["OPENAI_API_KEY"],
-        "OPENAI_MODEL": config["OPENAI_MODEL"],
-        "DEFAULT_MAX_PROCESSES": config["DEFAULT_MAX_PROCESSES"],
-        "INTENT_MATCH_THRESHOLD": config["INTENT_MATCH_THRESHOLD"],
-        "INTENT_INSERTION_THRESHOLD": config["INTENT_INSERTION_THRESHOLD"],
-    }
-
-
-def validate_config(config_dict: dict[str, Any]) -> None:
-    """Validate configuration dictionary for backward compatibility.
-
-    Parameters
-    ----------
-    config_dict : dict[str, Any]
-        Configuration dictionary to validate
-
-    Raises
-    ------
-    ValueError
-        If critical configuration values are invalid
-    """
-    if config is None:
-        raise RuntimeError("Configuration not initialized. Call initialize_config() first.")
-
-    try:
-        config.validate()
-    except ConfigurationError as e:
-        raise ValueError(str(e)) from e
-
-
-# Legacy constants for backward compatibility
-# These will be deprecated once all code is migrated to use the Config class
-INTENT_DB_PERSIST_DIR: str = os.getenv("INTENT_DB_PERSIST_DIR", "chromadb_data")
-INTENT_COLLECTION_NAME: str = os.getenv("INTENT_COLLECTION_NAME", "winston_intents")
-OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
-DEFAULT_MAX_PROCESSES: int = int(os.getenv("DEFAULT_MAX_PROCESSES", "5"))
-INTENT_MATCH_THRESHOLD: float = float(os.getenv("INTENT_MATCH_THRESHOLD", "0.7"))
-INTENT_INSERTION_THRESHOLD: float = float(os.getenv("INTENT_INSERTION_THRESHOLD", "0.92"))

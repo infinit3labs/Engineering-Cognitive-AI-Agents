@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "experiential_memory": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--package",
+        "experiential-memory",
+        "python",
+        "-m",
+        "experiential_memory"
+      ],
+      "env": {
+        "EPISODES_PATH": "${CHAPTER_ROOT}/episodes",
+        "CHROMA_PATH": "${CHAPTER_ROOT}/chroma_db"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${CHAPTER_ROOT}/workspace"
+      ]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}

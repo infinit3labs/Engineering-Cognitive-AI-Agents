@@ -11,6 +11,7 @@ An interactive REPL-like CLI tool for querying and inspecting ChromaDB databases
 - Chapter context resolution (e.g., `chapter03` → database path)
 - Rich-formatted output with tables and syntax highlighting
 - Export functionality for query results
+- **NEW: Episode mode for exploring Chapter 4's experiential memory**
 
 ## Installation
 
@@ -34,6 +35,9 @@ chroma-repl --db-path ./path/to/chroma.db
 # Use chapter context resolution
 chroma-repl --chapter-context chapter03
 
+# Explore Chapter 4's episodic memory
+chroma-repl --chapter-context chapter04 --mode episodes
+
 # Specify collection name
 chroma-repl --collection-name intent_index
 
@@ -45,35 +49,63 @@ chroma-repl --verbose
 
 Once in the REPL, you can use these commands:
 
-- `query <text> [--limit N] [--threshold X.X]` - Semantic search
+#### Intent Mode (default)
+- `query <text> [n]` - Semantic search for intents
+- `show <doc_id>` - Display full document details
+- `count [type]` - Document count (optionally by type)
+- `export <path> [type]` - Export data to JSON
 - `info` - Database and collection information
-- `count` - Document count in collection
 - `collections` - List all collections
-- `export [--format json|csv] [--output file.ext]` - Export data
+- `help` - Show command help
+- `exit` - Exit the REPL
+
+#### Episode Mode
+- `list [--has-surprises]` - List all episodes
+- `show <episode_id> [-t]` - Show episode details (use -t for full trace)
+- `query <text> [n]` - Search episodes by semantic similarity
+- `info` - Database and collection information
+- `collections` - List all collections
 - `help` - Show command help
 - `exit` - Exit the REPL
 
 ### Examples
 
+#### Intent Mode
 ```bash
 # Query for intent-related documents
-> query "create file" --limit 5 --threshold 0.8
+> query "create file" 5
 
-# Get database statistics
-> info
+# Show specific tool details
+> show general-read_file
 
-# Export all documents as JSON
-> export --format json --output intent_data.json
+# Count tools in the database
+> count tool
+
+# Export all intents
+> export ./intents.json intent
+```
+
+#### Episode Mode
+```bash
+# List episodes with lessons learned
+> list --has-surprises
+
+# Show episode with full action trace
+> show 12345-abcd-6789 -t
+
+# Search for testing-related episodes
+> query "testing setup" 5
 ```
 
 ## Integration with Winston
 
-This tool is specifically designed to work with Winston's intent database system:
+This tool is specifically designed to work with Winston's database systems:
 
 - Automatically resolves chapter-specific database paths
 - Uses Winston's common configuration and utilities
-- Supports the intent index collection used for tool discovery
+- Supports both intent index (Chapter 3) and episodic memory (Chapter 4)
 - Compatible with Winston's ChromaDB schema and metadata
+- Enables exploration of Winston's learning and memory systems
 
 ## Architecture
 

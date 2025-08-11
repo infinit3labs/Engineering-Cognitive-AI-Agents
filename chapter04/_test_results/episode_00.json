@@ -1,0 +1,31 @@
+{
+  "id": "eec3d034-2e59-4c81-888a-3ad7f698346c",
+  "task_description": "What is the capital of Poland?",
+  "outcome": "context_shift",
+  "result": "context shifted from historical Q&A about Poland to real-time tech news retrieval",
+  "timestamp": "2025-08-11T02:51:30.915210",
+  "full_trace": [
+    {
+      "timestamp": "2025-08-11T02:51:30.915722",
+      "reasoning": "This is a straightforward factual question that can be answered directly without additional actions or tools.",
+      "action": "task_complete",
+      "result": "Warsaw",
+      "task": "What is the capital of Poland?"
+    },
+    {
+      "timestamp": "2025-08-11T02:51:59.175389",
+      "reasoning": "Same episode and this is a direct factual question I can answer from knowledge.",
+      "action": "task_complete",
+      "result": "No. Earlier capitals included Gniezno (early Piast state) and Krak\u00f3w (for several centuries). Warsaw became the capital in the late 16th century when King Sigismund III Vasa moved the royal court and parliament there (commonly dated 1596), and it has remained the capital since (formally reaffirmed in 1918).",
+      "task": "Was it always Warsaw?"
+    },
+    {
+      "timestamp": "2025-08-11T02:52:25.541813",
+      "reasoning": "context shifted from historical Q&A about Poland to real-time tech news retrieval",
+      "action": "START_INTENT: start new episode for latest AI headlines on Hacker News",
+      "result": "Starting intent discovery for: start new episode for latest AI headlines on Hacker News",
+      "task": "What are the latest AI headlines on Hacker News"
+    }
+  ],
+  "summary_checkpoint": null
+}

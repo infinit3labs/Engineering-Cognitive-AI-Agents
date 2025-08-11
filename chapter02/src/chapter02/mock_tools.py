@@ -91,8 +91,8 @@ def send_email(recipient: str, subject: str, message: str) -> str:
     True
     """
     result = f"Email sent to {recipient} with subject '{subject}'"
-    logger.info(f"Mock email tool executed: {result}")
-    logger.debug(f"Email content: {message[:50]}{'...' if len(message) > 50 else ''}")
+    logger.trace(f"Mock email tool executed: {result}")
+    logger.trace(f"Email content: {message[:50]}{'...' if len(message) > 50 else ''}")
     return result
 
 
@@ -120,8 +120,8 @@ def send_slack(channel: str, message: str) -> str:
     True
     """
     result = f"Slack message sent to {channel}"
-    logger.info(f"Mock Slack tool executed: {result}")
-    logger.debug(f"Slack content: {message[:50]}{'...' if len(message) > 50 else ''}")
+    logger.trace(f"Mock Slack tool executed: {result}")
+    logger.trace(f"Slack content: {message[:50]}{'...' if len(message) > 50 else ''}")
     return result
 
 
@@ -149,6 +149,6 @@ def send_teams(recipient: str, message: str) -> str:
     True
     """
     result = f"Teams message sent to {recipient}"
-    logger.info(f"Mock Teams tool executed: {result}")
-    logger.debug(f"Teams content: {message[:50]}{'...' if len(message) > 50 else ''}")
+    logger.trace(f"Mock Teams tool executed: {result}")
+    logger.trace(f"Teams content: {message[:50]}{'...' if len(message) > 50 else ''}")
     return result

@@ -2,6 +2,7 @@
 name = "ecaa-book-root"
 version = "0.1.0"
 requires-python = ">=3.13"
+
 [tool.uv.workspace]
 members = [
     # tools
@@ -9,9 +10,11 @@ members = [
     "chroma-repl",
     # project
     "common",
-    "chapter01",
     "chapter02",
     "chapter03",
+    "chapter04",
+    # mcp servers
+    "mcp_servers/experiential_memory",
     # Add more chapters as needed
 ]
 
